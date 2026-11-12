@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Neon Eclipse — generative art for make.fun 'Make the coolest art'.
+"""SYNTHWAVE SUNSET — generative art for make.fun 'Make the coolest art' (v2).
 
-Pure Python 3 stdlib (no PIL in the sandbox). Renders a total eclipse with a
-rayed corona over layered mountain silhouettes and a reflective lake, at
-1024x1024, fully deterministic (fixed seed -> identical bytes every run).
-Writes /output/entry.png (override with ENTRY_OUT for local runs).
+One bold focal subject: a giant striped gradient sun sinking behind a
+silhouette ridge over a glowing perspective grid. Pure Python 3 stdlib,
+fully deterministic (fixed constants and fixed-seed placement only), writes
+/output/entry.png (override with ENTRY_OUT for local runs).
 """
 import math, os, random, struct, zlib
 
 W = H = 1024
-rng = random.Random(20261113)
 
 
 def clamp(v, a, b):
@@ -25,7 +24,6 @@ def mix(c1, c2, t):
 
 
 def grad(stops, t):
-    """stops: list of (pos, color)."""
     if t <= stops[0][0]:
         return stops[0][1]
     for i in range(1, len(stops)):
@@ -57,8 +55,15 @@ class Canvas:
             i = y * self.w * 3
             self.p[i:i + self.w * 3] = row
 
+    def fill_rows(self, stops, y_top, y_bot):
+        for y in range(y_top, y_bot):
+            t = (y - y_top) / max(1, (y_bot - y_top - 1))
+            c = grad(stops, t)
+            row = bytes((int(c[0]), int(c[1]), int(c[2]))) * self.w
+            i = y * self.w * 3
+            self.p[i:i + self.w * 3] = row
 
-# --- SDF shape drawing: paint(x, y) -> (r, g, b, alpha_multiplier) ---
+
 def draw(cv, bbox, sdf, paint, aa=1.0):
     x0 = max(0, int(bbox[0])); y0 = max(0, int(bbox[1]))
     x1 = min(cv.w, int(bbox[2]) + 1); y1 = min(cv.h, int(bbox[3]) + 1)
@@ -71,12 +76,21 @@ def draw(cv, bbox, sdf, paint, aa=1.0):
                 cv.blend(x, y, c, a * c[3])
 
 
-def solid(c):
-    return lambda x, y: (c[0], c[1], c[2], 1.0)
+def solid(c, a=1.0):
+    return lambda x, y: (c[0], c[1], c[2], a)
 
 
 def sd_circle(cx, cy, r):
     return lambda x, y: math.hypot(x - cx, y - cy) - r
+
+
+def sd_capsule(x1, y1, x2, y2, r):
+    def f(px, py):
+        ex, ey = x2 - x1, y2 - y1
+        wx, wy = px - x1, py - y1
+        t = clamp((wx * ex + wy * ey) / (ex * ex + ey * ey), 0.0, 1.0)
+        return math.hypot(wx - ex * t, wy - ey * t) - r
+    return f
 
 
 def sd_poly(pts):
@@ -114,177 +128,93 @@ def ridge(seed, y_base, amp, step):
         x += step * (0.6 + r.random() * 0.8)
         y = y_base + (r.random() - 0.5) * amp
         pts.append((x, y))
-        # sharp peak between steps
         pts.append((x + step * 0.3, y - amp * (0.35 + r.random() * 0.55)))
     pts.append((W + 20, y_base))
     pts.append((W + 20, H + 20))
     return pts
 
 
-def pine(cv, cx, base_y, s, color):
-    """Silhouette pine: stacked triangles + trunk."""
-    trunk = [(cx - 6 * s, base_y), (cx + 6 * s, base_y),
-             (cx + 4 * s, base_y - 46 * s), (cx - 4 * s, base_y - 46 * s)]
-    draw(cv, (cx - 10 * s, base_y - 50 * s, cx + 10 * s, base_y), sd_poly(trunk), solid(color))
-    tiers = [(86, 40), (66, 78), (46, 112)]
-    for half_w, top_off in tiers:
-        ty = base_y - top_off * s - 30 * s
-        by = ty + 74 * s
-        tri = [(cx - half_w * s, by), (cx + half_w * s, by), (cx, ty)]
-        draw(cv, (cx - half_w * s, ty, cx + half_w * s, by), sd_poly(tri), solid(color))
-
-
 def main():
     cv = Canvas(W, H)
+    horizon = 688
+    SX, SY, SR = 512, 452, 302  # the sun
 
-    # --- sky: deep space indigo -> violet -> magenta -> ember at horizon ---
-    horizon = 742
-    sky_stops = [
-        (0.00, (7, 8, 32)), (0.22, (24, 16, 66)), (0.42, (58, 24, 104)),
-        (0.58, (110, 36, 128)), (0.70, (178, 58, 120)), (0.80, (232, 96, 92)),
-        (0.90, (250, 150, 84)), (1.00, (255, 186, 102)),
-    ]
-    cv.vgrad(sky_stops, 0, horizon + 2)
+    # --- sky: near-black violet up top -> deep magenta at the horizon ---
+    cv.vgrad([(0.00, (10, 4, 32)), (0.35, (32, 8, 62)), (0.55, (66, 16, 96)),
+              (0.68, (110, 26, 116))], 0, horizon + 2)
 
-    # --- lake: darker mirrored ember gradient ---
-    lake_stops = [
-        (0.00, (30, 14, 52)), (0.30, (52, 22, 74)), (0.62, (88, 34, 88)),
-        (0.85, (120, 48, 84)), (1.00, (66, 26, 66)),
-    ]
-    for y in range(horizon, H):
-        t = (y - horizon) / (H - horizon)
-        c = grad(lake_stops, t)
-        # keep lake darker toward the viewer
-        row = bytes((int(c[0]), int(c[1]), int(c[2]))) * W
-        i = y * W * 3
-        cv.p[i:i + W * 3] = row
-
-    # --- stars (upper sky, deterministic) ---
-    for _ in range(620):
+    # --- sparse stars, upper sky only ---
+    rng = random.Random(4242)
+    for _ in range(170):
         sx = rng.random() * W
-        sy = (rng.random() ** 1.6) * horizon * 0.92
-        fade = 1.0 - sy / (horizon * 1.05)
-        if fade <= 0:
-            continue
-        br = (0.25 + rng.random() * 0.75) * clamp(fade, 0, 1)
-        r = 0.7 + rng.random() * 1.7
-        tint = [(200, 210, 255), (255, 255, 255), (255, 230, 200)][rng.randrange(3)]
-        col = (tint[0] * br, tint[1] * br, tint[2] * br)
+        sy = (rng.random() ** 1.5) * 400
+        br = 0.35 + rng.random() * 0.65
+        r = 0.8 + rng.random() * 1.5
+        col = (210 * br + 30, 200 * br + 30, 255 * br)
         draw(cv, (sx - 4, sy - 4, sx + 4, sy + 4), sd_circle(sx, sy, r),
-             lambda x, y, c=col: (c[0], c[1], c[2], 0.85), aa=1.4)
-        if r > 2.1:  # sparkle cross on the brightest
-            for dx, dy in ((0, -6), (0, 6), (-6, 0), (6, 0)):
-                cv.blend(int(sx + dx), int(sy + dy), col, 0.35)
+             solid(tuple(min(255, int(v)) for v in col), 0.9), aa=1.4)
 
-    # --- eclipse geometry ---
-    ex, ey, er = 512, 400, 118
+    # --- sun glow: warm halo hugging the disc ---
+    def glow(x, y):
+        d = math.hypot(x - SX, y - SY) - SR
+        a = math.exp(-(max(d, 0.0) ** 2) / (2 * 64.0 ** 2)) * 0.55
+        return (255, 110, 130, clamp(a, 0.0, 1.0))
+    draw(cv, (SX - 470, SY - 470, SX + 470, horizon), sd_circle(SX, SY, 10 ** 6),
+         glow, aa=1.0)
 
-    # wide ambient glow (bbox reaches ~4 sigma so the falloff dies at the edge)
-    def glow_paint(strength, tint, sigma):
-        def f(x, y):
-            d = math.hypot(x - ex, y - ey)
-            a = math.exp(-((d - er) ** 2) / (2 * sigma ** 2)) * strength
-            return (tint[0], tint[1], tint[2], clamp(a, 0, 1))
-        return f
-    draw(cv, (ex - 600, ey - 600, ex + 600, ey + 600), sd_circle(ex, ey, 10 ** 6),
-         glow_paint(0.50, (255, 170, 120), 120.0), aa=1.0)
-    draw(cv, (ex - 470, ey - 470, ex + 470, ey + 470), sd_circle(ex, ey, 10 ** 6),
-         glow_paint(0.55, (255, 205, 150), 82.0), aa=1.0)
+    # --- THE SUN: one giant gradient disc, sliced in its lower half ---
+    gaps = []  # (y_center_offset_from_sun_center, half_thickness) in px
+    for off, half in ((34, 3.2), (78, 4.6), (126, 6.4), (178, 8.8), (234, 12.0)):
+        gaps.append((SY + off, half))
+    sun_stops = [(0.00, (255, 240, 170)), (0.38, (255, 186, 74)),
+                 (0.66, (255, 110, 84)), (0.86, (255, 64, 128)),
+                 (1.00, (244, 44, 158))]
 
-    # corona rays: tapered triangles, gold-white, deterministic lengths
-    n_rays = 72
-    for i in range(n_rays):
-        ang = (i / n_rays) * math.tau + rng.uniform(-0.02, 0.02)
-        L = er * (0.55 + rng.random() ** 2 * 1.9)
-        wdt = 0.016 + rng.random() * 0.03
-        x0 = ex + math.cos(ang) * er * 0.92
-        y0 = ey + math.sin(ang) * er * 0.92
-        x1 = ex + math.cos(ang) * (er + L)
-        y1 = ey + math.sin(ang) * (er + L)
-        px_, py_ = math.cos(ang + math.pi / 2), math.sin(ang + math.pi / 2)
-        bw = er * wdt
-        pts = [(x0 + px_ * bw, y0 + py_ * bw), (x0 - px_ * bw, y0 - py_ * bw), (x1, y1)]
-        bright = 0.35 + rng.random() * 0.65
-        col = (255 * bright + 40, 225 * bright + 30, 180 * bright + 20)
-        col = tuple(min(255, int(v)) for v in col)
-        bb = (min(p[0] for p in pts) - 3, min(p[1] for p in pts) - 3,
-              max(p[0] for p in pts) + 3, max(p[1] for p in pts) + 3)
-        draw(cv, bb, sd_poly(pts), lambda x, y, c=col: (c[0], c[1], c[2], 0.5), aa=1.6)
+    def sun_paint(x, y):
+        t = (y - (SY - SR)) / (2 * SR)
+        c = grad(sun_stops, clamp(t, 0.0, 1.0))
+        a = 1.0
+        for gy, half in gaps:
+            dd = abs(y - gy) - half
+            if dd < 2.0:
+                a = min(a, clamp(0.5 + dd / 2.0, 0.0, 1.0))
+        return (c[0], c[1], c[2], a)
+    draw(cv, (SX - SR, SY - SR, SX + SR, SY + SR), sd_circle(SX, SY, SR),
+         sun_paint, aa=1.6)
 
-    # chromosphere ring: thin hot-pink rim
-    def ring_paint(x, y):
-        d = math.hypot(x - ex, y - ey)
-        a = clamp(1.0 - abs(d - (er + 3)) / 7.0, 0, 1)
-        return (255, 84, 130, a * 0.9)
-    draw(cv, (ex - er - 14, ey - er - 14, ex + er + 14, ey + er + 14),
-         sd_circle(ex, ey, 10 ** 6), ring_paint)
+    # --- floor base: dark violet; painted over the sun's lower segment
+    # so the disc sinks cleanly behind the horizon line ---
+    cv.fill_rows([(0.0, (24, 6, 44)), (1.0, (8, 2, 18))], horizon, H)
 
-    # the black disc + diamond-ring bead (bright spot at upper left rim)
-    draw(cv, (ex - er, ey - er, ex + er, ey + er), sd_circle(ex, ey, er), solid((3, 3, 10)))
-    ba = math.radians(-52)
-    bx, by = ex + math.cos(ba) * er, ey + math.sin(ba) * er
-    for rr, al in ((26, 0.25), (15, 0.55), (7, 1.0)):
-        draw(cv, (bx - rr - 2, by - rr - 2, bx + rr + 2, by + rr + 2),
-             sd_circle(bx, by, rr), lambda x, y, a=al: (255, 250, 235, a), aa=2.0)
+    # --- silhouette ridges crossing in front of the sun ---
+    far = ridge(7, horizon - 6, 74, 120)
+    draw(cv, (-20, 380, W + 20, horizon + 4), sd_poly(far), solid((38, 12, 58)), aa=1.2)
+    near = ridge(19, horizon + 2, 66, 90)
+    draw(cv, (-20, 420, W + 20, horizon + 4), sd_poly(near), solid((13, 4, 26)), aa=1.2)
 
-    # --- mountain layers (atmospheric: far = lighter haze, near = darker) ---
-    layers = [
-        (11, 560, 120, 90, (74, 44, 108)),
-        (22, 622, 130, 80, (52, 30, 84)),
-        (33, 690, 140, 70, (34, 20, 58)),
-        (44, horizon + 4, 90, 60, (18, 11, 34)),
-    ]
-    for seed, yb, amp, step, col in layers:
-        pts = ridge(seed, yb, amp, step)
-        # clip ridge to above the lake line for far layers
-        draw(cv, (-20, 300, W + 20, horizon + 6), sd_poly(pts), solid(col), aa=1.2)
+    # --- perspective grid on the floor (hot pink, glow + core) ---
+    grid_col = (255, 45, 150)
+    # verticals fanning from the vanishing point
+    for k in range(-7, 8):
+        xb = 512 + k * 168
+        draw(cv, (min(512, xb) - 10, horizon, max(512, xb) + 10, H),
+             sd_capsule(512, horizon, xb, H, 7.0), solid(grid_col, 0.16), aa=3.0)
+        draw(cv, (min(512, xb) - 5, horizon, max(512, xb) + 5, H),
+             sd_capsule(512, horizon, xb, H, 1.8), solid(grid_col, 0.85), aa=1.4)
+    # horizontals rushing toward the viewer
+    for i in range(1, 10):
+        t = i / 9.0
+        y = horizon + (H - horizon) * t ** 2.1
+        thick = 1.6 + t * 4.5
+        draw(cv, (0, y - thick * 3, W, y + thick * 3),
+             sd_capsule(0, y, W, y, thick * 2.6), solid(grid_col, 0.14), aa=3.0)
+        draw(cv, (0, y - thick, W, y + thick),
+             sd_capsule(0, y, W, y, thick * 0.55), solid(grid_col, 0.9), aa=1.4)
+    # horizon light line
+    draw(cv, (0, horizon - 4, W, horizon + 4), sd_capsule(0, horizon, W, horizon, 2.6),
+         solid((255, 120, 190), 0.55), aa=1.6)
 
-    # snow-kissed rim light on the nearest ridge tops: thin ember line
-    # (cheap trick: redraw nearest ridge shifted up 3px in ember, then overdraw original)
-    pts_near = ridge(44, horizon + 4, 90, 60)
-    shifted = [(x, y - 3) for (x, y) in pts_near]
-    draw(cv, (-20, 300, W + 20, horizon + 6), sd_poly(shifted),
-         lambda x, y: (255, 140, 90, 0.55), aa=1.2)
-    draw(cv, (-20, 300, W + 20, horizon + 6), sd_poly(pts_near), solid((18, 11, 34)), aa=1.2)
-
-    # --- lake reflection: shimmering light column under the eclipse ---
-    for i in range(210):
-        t = rng.random()
-        y = horizon + 6 + t * (H - horizon - 14)
-        spread = 30 + t * 210
-        cx = ex + (rng.random() - 0.5) * 2 * spread * 0.55
-        wdt = (6 + rng.random() * 46) * (1 - t * 0.45)
-        hgt = 2.0 + rng.random() * 3.0
-        bright = (1 - t) * (0.25 + rng.random() * 0.6)
-        col = mix((255, 120, 90), (255, 200, 130), rng.random())
-        col = tuple(v * (0.35 + bright) for v in col)
-        for yy in range(int(y), int(y + hgt)):
-            for xx in range(int(cx - wdt / 2), int(cx + wdt / 2)):
-                cv.blend(xx, yy, col, 0.5)
-    # faint ridge reflections: dark soft bands
-    for i in range(46):
-        y = horizon + 8 + rng.random() * (H - horizon - 20)
-        x = rng.random() * W
-        wdt = 30 + rng.random() * 130
-        for xx in range(int(x), int(x + wdt)):
-            cv.blend(xx, int(y), (8, 5, 18), 0.16)
-
-    # --- foreground pines framing the corners ---
-    pine(cv, 66, horizon + 26, 1.25, (8, 5, 16))
-    pine(cv, 138, horizon + 18, 0.8, (10, 6, 20))
-    pine(cv, 958, horizon + 26, 1.35, (8, 5, 16))
-    pine(cv, 884, horizon + 16, 0.75, (10, 6, 20))
-
-    # --- birds: tiny silhouettes ---
-    def bird(cx, cy, s):
-        for sgn in (-1, 1):
-            pts = [(cx, cy), (cx + sgn * 16 * s, cy - 8 * s), (cx + sgn * 19 * s, cy - 4 * s),
-                   (cx + sgn * 4 * s, cy + 2 * s)]
-            draw(cv, (cx - 22 * s, cy - 10 * s, cx + 22 * s, cy + 4 * s), sd_poly(pts),
-                 solid((10, 6, 22)), aa=1.2)
-    bird(238, 218, 1.0); bird(300, 262, 0.7); bird(792, 190, 0.85); bird(742, 244, 0.6)
-
-    # --- vignette (single pass; no grain: noise would break the 1 MiB PNG cap) ---
+    # --- gentle vignette ---
     cxm, cym = W / 2, H / 2
     maxd2 = cxm * cxm + cym * cym
     xs2 = [(x - cxm) ** 2 for x in range(W)]
@@ -294,7 +224,7 @@ def main():
         base = y * W * 3
         for x in range(W):
             d2 = (xs2[x] + dy2) / maxd2
-            v = 1.0 - 0.34 * d2 * (0.65 + 0.35 * d2)
+            v = 1.0 - 0.30 * d2 * (0.65 + 0.35 * d2)
             i = base + x * 3
             p[i] = clamp(int(p[i] * v), 0, 255)
             p[i + 1] = clamp(int(p[i + 1] * v), 0, 255)
@@ -325,10 +255,8 @@ def main():
 if __name__ == "__main__":
     main()
 
-# --- make.fun entry notes (coolest-art-01) --------------------------------
+# --- make.fun entry notes (coolest-art-01, v2) ----------------------------
 # Entrant: @urelkdubdqwr. Deterministic generative art: pure stdlib SDF
-# rasterizer, fixed seedless math only, so every run writes the identical
-# PNG bytes to /output/entry.png.
-# Composition: the eclipse sits on the upper golden-ratio point; ridges
-# darken and cool with distance, and the lake reflection reuses the sky
-# gradient so the eye lands on the diamond ring first.
+# rasterizer, fixed math only, identical PNG bytes on every run.
+# Duel design: one focal shape (the striped sun), a single horizon line,
+# and a grid that pulls the eye to the center — nothing else competes.

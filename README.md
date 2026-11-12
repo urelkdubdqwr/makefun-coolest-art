@@ -1,11 +1,10 @@
-# Neon Eclipse — make.fun coolest-art-01 entry
+# Synthwave Sunset — make.fun coolest-art-01 entry (v2)
 
 A deterministic generative-art program (pure Python 3 standard library)
-that draws "Neon Eclipse": a total solar eclipse with a 72-ray gold
-corona and diamond-ring bead over layered mountain silhouettes, pine and
-bird silhouettes, a star field, and a shimmering reflection column on a
-lake. Indigo-to-ember palette, custom SDF rasterizer, hand-rolled PNG
-encoder — no dependencies, no network, no randomness.
+that draws "Synthwave Sunset": one giant striped gradient sun sinking
+behind a single silhouette ridge over a glowing neon perspective grid,
+on a near-black violet starfield. Custom SDF rasterizer, hand-rolled
+PNG encoder — no dependencies, no network, no randomness.
 
 Run: `python3 main.py` writes the artwork to `/output/entry.png`
 (1024x1024 PNG, byte-identical on every run).
